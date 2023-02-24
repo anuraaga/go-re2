@@ -64,7 +64,7 @@ type libre2ABI struct {
 
 func init() {
 	ctx := context.Background()
-	rt := wazero.NewRuntime(ctx)
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
@@ -118,12 +118,9 @@ func newABI() *libre2ABI {
 }
 
 func (abi *libre2ABI) startOperation(memorySize int) {
-	abi.mu.Lock()
-	abi.memory.reserve(abi, uint32(memorySize))
 }
 
 func (abi *libre2ABI) endOperation() {
-	abi.mu.Unlock()
 }
 
 func newRE(abi *libre2ABI, pattern cString, longest bool, posix bool, caseInsensitive bool) uintptr {
@@ -363,26 +360,42 @@ func globalReplace(re *Regexp, textAndTargetPtr uintptr, rewritePtr uintptr) ([]
 type cString struct {
 	ptr    uintptr
 	length int
+	abi    *libre2ABI
+}
+
+func (cs *cString) free() {
+	if _, err := cs.abi.free.Call(context.Background(), uint64(cs.ptr)); err != nil {
+		panic(err)
+	}
 }
 
 func newCString(abi *libre2ABI, s string) cString {
-	ptr := abi.memory.writeString(abi, s)
+	ptr := malloc(abi, uint32(len(s)))
+	if !abi.wasmMemory.WriteString(uint32(ptr), s) {
+		panic(errFailedWrite)
+	}
+
 	return cString{
 		ptr:    ptr,
 		length: len(s),
+		abi:    abi,
 	}
 }
 
 func newCStringFromBytes(abi *libre2ABI, s []byte) cString {
-	ptr := abi.memory.write(abi, s)
+	ptr := malloc(abi, uint32(len(s)))
+	if !abi.wasmMemory.Write(uint32(ptr), s) {
+		panic(errFailedWrite)
+	}
 	return cString{
 		ptr:    ptr,
 		length: len(s),
+		abi:    abi,
 	}
 }
 
 func newCStringPtr(abi *libre2ABI, cs cString) pointer {
-	ptr := abi.memory.allocate(8)
+	ptr := malloc(abi, 8)
 	if !abi.wasmMemory.WriteUint32Le(uint32(ptr), uint32(cs.ptr)) {
 		panic(errFailedWrite)
 	}
@@ -394,16 +407,25 @@ func newCStringPtr(abi *libre2ABI, cs cString) pointer {
 
 type cStringArray struct {
 	ptr uintptr
+	abi *libre2ABI
+}
+
+func (csa *cStringArray) free() {
+	free(csa.abi, csa.ptr)
 }
 
 func newCStringArray(abi *libre2ABI, n int) cStringArray {
-	ptr := abi.memory.allocate(uint32(n * 8))
-	return cStringArray{ptr: ptr}
+	ptr := malloc(abi, uint32(n*8))
+	return cStringArray{ptr: ptr, abi: abi}
 }
 
 type pointer struct {
 	ptr uintptr
 	abi *libre2ABI
+}
+
+func (p pointer) free() {
+	free(p.abi, p.ptr)
 }
 
 func malloc(abi *libre2ABI, size uint32) uintptr {

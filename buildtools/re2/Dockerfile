@@ -1,33 +1,33 @@
 # Copyright 2022 The OWASP Coraza contributors
 # SPDX-License-Identifier: Apache-2.0
 
-FROM ghcr.io/corazawaf/coraza-proxy-wasm/buildtools-wasi-sdk:main
+FROM wasi-sdk:threads
 
 RUN apt-get update && apt-get install -y binaryen
 
 # Use post-release commit for now as it includes support for no-threads
 RUN mkdir -p /re2 && curl -L https://github.com/google/re2/archive/954656f47fe8fb505d4818da1e128417a79ea500.tar.gz | tar -xz --strip-components 1 -C /re2
 WORKDIR /re2
-ENV RE2_CXXFLAGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I. -DRE2_NO_THREADS
+ENV RE2_CXXFLAGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I. -pthread
 RUN make obj/libre2.a
 
 WORKDIR /cre2
-ADD cre2/cre2.cpp /cre2
-ADD cre2/cre2.h /cre2
+ADD internal/cre2/cre2.cpp /cre2
+ADD internal/cre2/cre2.h /cre2
 # Just one source file so not worth running make
-RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
-    llvm-ar-15 cru libcre2.a  cre2.o && \
-    llvm-ranlib-15 libcre2.a
+RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS $RE2_CXXFLAGS && \
+    $AR cru libcre2.a  cre2.o && \
+    $RANLIB libcre2.a
 
 # Separate step so exports can be updated without recompiling.
 # Number of layers isn't really a concern for this image.
 # global-base=1024 same as emcc and allows further wasm-opt optimizations
-RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib=compiler-rt --target=wasm32-wasi -shared \
+RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib=compiler-rt --target=wasm32-wasi-threads -pthread -shared \
     -nostdlib /wasi-sysroot/lib/wasm32-wasi/crt1-reactor.o \
-    /usr/lib/llvm-15/lib/clang/15.*/lib/wasi/libclang_rt.builtins-wasm32.a \
+    /usr/lib/llvm-16/lib/clang/16/lib/wasi/libclang_rt.builtins-wasm32.a \
     /re2/obj/libre2.a \
     /cre2/libcre2.a \
-    -L/wasi-sysroot/lib/wasm32-wasi -lc++ -lc++abi -lc \
+    -L/wasi-sysroot/lib/wasm32-wasi-threads -L/wasi-sysroot/lib/wasm32-wasi -lc++ -lc++abi -lc -lpthread \
     --sysroot=/wasi-sysroot -Wl,--demangle -Wl,--allow-undefined \
     -Wl,--export=malloc \
     -Wl,--export=free \
@@ -49,6 +49,7 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib
     -Wl,--export=cre2_named_groups_iter_delete \
     -Wl,--export=cre2_global_replace_re
 
-RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+#RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+RUN mv libcre2-noopt.so libcre2.so
 
 CMD ["bash", "-c", "cp /re2/obj/libre2.a /cre2/libcre2.so /cre2/libcre2.a /out/"]
