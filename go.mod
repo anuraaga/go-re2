@@ -7,3 +7,5 @@ require (
 	github.com/tetratelabs/wazero v1.1.0
 	github.com/wasilibs/nottinygc v0.2.0
 )
+
+replace github.com/tetratelabs/wazero => ../wazero
