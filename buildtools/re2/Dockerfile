@@ -5,8 +5,8 @@ FROM ghcr.io/webassembly/wasi-sdk:wasi-sdk-20
 
 ADD buildtools/re2/wasi-sdk-threads.cmake /usr/share/cmake/wasi-sdk-threads.cmake
 ENV CMAKE_TOOLCHAIN_FILE /usr/share/cmake/wasi-sdk-threads.cmake
-ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot
-ENV CXXFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot
+ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread
+ENV CXXFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread
 ENV LDFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot
 
 RUN apt-get update && apt-get install -y binaryen curl
