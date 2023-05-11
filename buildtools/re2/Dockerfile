@@ -36,6 +36,8 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib
     /cre2/libcre2.a \
     -L/wasi-sysroot/lib/wasm32-wasi-threads -lc++ -lc++abi -lc \
     --sysroot=/wasi-sysroot -Wl,--demangle -Wl,--allow-undefined \
+    -Wl,--import-memory \
+    -Wl,--export-memory \
     -Wl,--export=malloc \
     -Wl,--export=free \
     -Wl,--export=cre2_new \
@@ -57,6 +59,7 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib
     -Wl,--export=cre2_named_groups_iter_delete \
     -Wl,--export=cre2_global_replace_re
 
-RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+#RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+RUN cp libcre2-noopt.so libcre2.so
 
 CMD ["bash", "-c", "cp /re2/obj/libre2.a /cre2/libcre2.so /cre2/libcre2.a /out/"]

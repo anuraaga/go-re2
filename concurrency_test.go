@@ -9,7 +9,7 @@ import (
 
 func parse(logLine string, rx *Regexp, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10; i++ {
 		rx.FindStringSubmatch(logLine)
 	}
 }

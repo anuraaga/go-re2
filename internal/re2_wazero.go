@@ -31,7 +31,7 @@ var (
 )
 
 type libre2ABI struct {
-	cre2New                   api.Function
+	cre2New                   lazyFunction
 	cre2Delete                lazyFunction
 	cre2Match                 lazyFunction
 	cre2NumCapturingGroups    lazyFunction
@@ -48,8 +48,8 @@ type libre2ABI struct {
 	cre2OptSetCaseSensitive   lazyFunction
 	cre2OptSetLatin1Encoding  lazyFunction
 
-	malloc api.Function
-	free   api.Function
+	malloc lazyFunction
+	free   lazyFunction
 
 	wasmMemory api.Memory
 
@@ -80,7 +80,7 @@ func newABI() *libre2ABI {
 	}
 
 	abi := &libre2ABI{
-		cre2New:                   mod.ExportedFunction("cre2_new"),
+		cre2New:                   newLazyFunction(mod, "cre2_new"),
 		cre2Delete:                newLazyFunction(mod, "cre2_delete"),
 		cre2Match:                 newLazyFunction(mod, "cre2_match"),
 		cre2NumCapturingGroups:    newLazyFunction(mod, "cre2_num_capturing_groups"),
@@ -97,8 +97,8 @@ func newABI() *libre2ABI {
 		cre2OptSetCaseSensitive:   newLazyFunction(mod, "cre2_opt_set_case_sensitive"),
 		cre2OptSetLatin1Encoding:  newLazyFunction(mod, "cre2_opt_set_latin1_encoding"),
 
-		malloc: mod.ExportedFunction("malloc"),
-		free:   mod.ExportedFunction("free"),
+		malloc: newLazyFunction(mod, "malloc"),
+		free:   newLazyFunction(mod, "free"),
 
 		wasmMemory: mod.Memory(),
 		mod:        mod,
@@ -108,13 +108,11 @@ func newABI() *libre2ABI {
 }
 
 func (abi *libre2ABI) startOperation(memorySize int) allocation {
-	abi.mu.Lock()
 	return abi.reserve(uint32(memorySize))
 }
 
 func (abi *libre2ABI) endOperation(a allocation) {
 	a.free()
-	abi.mu.Unlock()
 }
 
 func newRE(abi *libre2ABI, pattern cString, opts CompileOptions) uintptr {
@@ -156,14 +154,11 @@ func newRE(abi *libre2ABI, pattern cString, opts CompileOptions) uintptr {
 			}
 		}
 	}
-	var callStack [3]uint64
-	callStack[0] = uint64(pattern.ptr)
-	callStack[1] = uint64(pattern.length)
-	callStack[2] = uint64(optPtr)
-	if err := abi.cre2New.CallWithStack(ctx, callStack[:]); err != nil {
+	if res, err := abi.cre2New.Call3(ctx, uint64(pattern.ptr), uint64(pattern.length), uint64(optPtr)); err != nil {
 		panic(err)
+	} else {
+		return uintptr(res)
 	}
-	return uintptr(callStack[0])
 }
 
 func reError(abi *libre2ABI, alloc *allocation, rePtr uintptr) (int, string) {
@@ -374,18 +369,15 @@ type pointer struct {
 }
 
 func malloc(abi *libre2ABI, size uint32) uintptr {
-	var callStack [1]uint64
-	callStack[0] = uint64(size)
-	if err := abi.malloc.CallWithStack(context.Background(), callStack[:]); err != nil {
+	if res, err := abi.malloc.Call1(context.Background(), uint64(size)); err != nil {
 		panic(err)
+	} else {
+		return uintptr(res)
 	}
-	return uintptr(callStack[0])
 }
 
 func free(abi *libre2ABI, ptr uintptr) {
-	var callStack [1]uint64
-	callStack[0] = uint64(ptr)
-	if err := abi.free.CallWithStack(context.Background(), callStack[:]); err != nil {
+	if _, err := abi.free.Call1(context.Background(), uint64(ptr)); err != nil {
 		panic(err)
 	}
 }
@@ -523,10 +515,8 @@ func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3
 }
 
 func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
-	if f.f == nil {
-		f.f = f.mod.ExportedFunction(f.name)
-	}
-	if err := f.f.CallWithStack(ctx, callStack); err != nil {
+	fun := f.mod.ExportedFunction(f.name)
+	if err := fun.CallWithStack(ctx, callStack); err != nil {
 		return 0, err
 	}
 	return callStack[0], nil
