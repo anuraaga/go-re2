@@ -36,8 +36,6 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib
     /cre2/libcre2.a \
     -L/wasi-sysroot/lib/wasm32-wasi-threads -lc++ -lc++abi -lc \
     --sysroot=/wasi-sysroot -Wl,--demangle -Wl,--allow-undefined \
-    -Wl,--import-memory \
-    -Wl,--export-memory \
     -Wl,--export=malloc \
     -Wl,--export=free \
     -Wl,--export=cre2_new \
