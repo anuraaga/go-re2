@@ -13,6 +13,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -52,16 +53,13 @@ type libre2ABI struct {
 
 	wasmMemory api.Memory
 
-	mod       api.Module
-	callStack []uint64
-
-	memory sharedMemory
-	mu     sync.Mutex
+	mod api.Module
+	mu  sync.Mutex
 }
 
 func init() {
 	ctx := context.Background()
-	rt := wazero.NewRuntime(ctx)
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
@@ -81,43 +79,41 @@ func newABI() *libre2ABI {
 		panic(err)
 	}
 
-	callStack := make([]uint64, 8) // Needs to be sized to the method with most parameters, which is cre2_match
-
 	abi := &libre2ABI{
 		cre2New:                   mod.ExportedFunction("cre2_new"),
-		cre2Delete:                newLazyFunction(mod, "cre2_delete", callStack),
-		cre2Match:                 newLazyFunction(mod, "cre2_match", callStack),
-		cre2NumCapturingGroups:    newLazyFunction(mod, "cre2_num_capturing_groups", callStack),
-		cre2ErrorCode:             newLazyFunction(mod, "cre2_error_code", callStack),
-		cre2ErrorArg:              newLazyFunction(mod, "cre2_error_arg", callStack),
-		cre2NamedGroupsIterNew:    newLazyFunction(mod, "cre2_named_groups_iter_new", callStack),
-		cre2NamedGroupsIterNext:   newLazyFunction(mod, "cre2_named_groups_iter_next", callStack),
-		cre2NamedGroupsIterDelete: newLazyFunction(mod, "cre2_named_groups_iter_delete", callStack),
-		cre2GlobalReplace:         newLazyFunction(mod, "cre2_global_replace_re", callStack),
-		cre2OptNew:                newLazyFunction(mod, "cre2_opt_new", callStack),
-		cre2OptDelete:             newLazyFunction(mod, "cre2_opt_delete", callStack),
-		cre2OptSetLongestMatch:    newLazyFunction(mod, "cre2_opt_set_longest_match", callStack),
-		cre2OptSetPosixSyntax:     newLazyFunction(mod, "cre2_opt_set_posix_syntax", callStack),
-		cre2OptSetCaseSensitive:   newLazyFunction(mod, "cre2_opt_set_case_sensitive", callStack),
-		cre2OptSetLatin1Encoding:  newLazyFunction(mod, "cre2_opt_set_latin1_encoding", callStack),
+		cre2Delete:                newLazyFunction(mod, "cre2_delete"),
+		cre2Match:                 newLazyFunction(mod, "cre2_match"),
+		cre2NumCapturingGroups:    newLazyFunction(mod, "cre2_num_capturing_groups"),
+		cre2ErrorCode:             newLazyFunction(mod, "cre2_error_code"),
+		cre2ErrorArg:              newLazyFunction(mod, "cre2_error_arg"),
+		cre2NamedGroupsIterNew:    newLazyFunction(mod, "cre2_named_groups_iter_new"),
+		cre2NamedGroupsIterNext:   newLazyFunction(mod, "cre2_named_groups_iter_next"),
+		cre2NamedGroupsIterDelete: newLazyFunction(mod, "cre2_named_groups_iter_delete"),
+		cre2GlobalReplace:         newLazyFunction(mod, "cre2_global_replace_re"),
+		cre2OptNew:                newLazyFunction(mod, "cre2_opt_new"),
+		cre2OptDelete:             newLazyFunction(mod, "cre2_opt_delete"),
+		cre2OptSetLongestMatch:    newLazyFunction(mod, "cre2_opt_set_longest_match"),
+		cre2OptSetPosixSyntax:     newLazyFunction(mod, "cre2_opt_set_posix_syntax"),
+		cre2OptSetCaseSensitive:   newLazyFunction(mod, "cre2_opt_set_case_sensitive"),
+		cre2OptSetLatin1Encoding:  newLazyFunction(mod, "cre2_opt_set_latin1_encoding"),
 
 		malloc: mod.ExportedFunction("malloc"),
 		free:   mod.ExportedFunction("free"),
 
 		wasmMemory: mod.Memory(),
 		mod:        mod,
-		callStack:  callStack,
 	}
 
 	return abi
 }
 
-func (abi *libre2ABI) startOperation(memorySize int) {
+func (abi *libre2ABI) startOperation(memorySize int) allocation {
 	abi.mu.Lock()
-	abi.memory.reserve(abi, uint32(memorySize))
+	return abi.reserve(uint32(memorySize))
 }
 
-func (abi *libre2ABI) endOperation() {
+func (abi *libre2ABI) endOperation(a allocation) {
+	a.free()
 	abi.mu.Unlock()
 }
 
@@ -160,17 +156,17 @@ func newRE(abi *libre2ABI, pattern cString, opts CompileOptions) uintptr {
 			}
 		}
 	}
-	callStack := abi.callStack
+	var callStack [3]uint64
 	callStack[0] = uint64(pattern.ptr)
 	callStack[1] = uint64(pattern.length)
 	callStack[2] = uint64(optPtr)
-	if err := abi.cre2New.CallWithStack(ctx, callStack); err != nil {
+	if err := abi.cre2New.CallWithStack(ctx, callStack[:]); err != nil {
 		panic(err)
 	}
 	return uintptr(callStack[0])
 }
 
-func reError(abi *libre2ABI, rePtr uintptr) (int, string) {
+func reError(abi *libre2ABI, alloc *allocation, rePtr uintptr) (int, string) {
 	ctx := context.Background()
 	res, err := abi.cre2ErrorCode.Call1(ctx, uint64(rePtr))
 	if err != nil {
@@ -181,15 +177,15 @@ func reError(abi *libre2ABI, rePtr uintptr) (int, string) {
 		return 0, ""
 	}
 
-	argPtr := newCStringArray(abi, 1)
+	argPtr := alloc.newCStringArray(1)
 	_, err = abi.cre2ErrorArg.Call2(ctx, uint64(rePtr), uint64(argPtr.ptr))
 	if err != nil {
 		panic(err)
 	}
-	sPtr := binary.LittleEndian.Uint32(abi.memory.read(abi, argPtr.ptr, 4))
-	sLen := binary.LittleEndian.Uint32(abi.memory.read(abi, argPtr.ptr+4, 4))
+	sPtr := binary.LittleEndian.Uint32(alloc.read(argPtr.ptr, 4))
+	sLen := binary.LittleEndian.Uint32(alloc.read(argPtr.ptr+4, 4))
 
-	return code, string(abi.memory.read(abi, uintptr(sPtr), int(sLen)))
+	return code, string(alloc.read(uintptr(sPtr), int(sLen)))
 }
 
 func numCapturingGroups(abi *libre2ABI, rePtr uintptr) int {
@@ -236,8 +232,8 @@ func matchFrom(re *Regexp, s cString, startPos int, matchesPtr uintptr, nMatches
 	return res == 1
 }
 
-func readMatch(abi *libre2ABI, cs cString, matchPtr uintptr, dstCap []int) []int {
-	matchBuf := abi.memory.read(abi, matchPtr, 8)
+func readMatch(alloc *allocation, cs cString, matchPtr uintptr, dstCap []int) []int {
+	matchBuf := alloc.read(matchPtr, 8)
 	subStrPtr := uintptr(binary.LittleEndian.Uint32(matchBuf))
 	sLen := uintptr(binary.LittleEndian.Uint32(matchBuf[4:]))
 	sIdx := subStrPtr - cs.ptr
@@ -245,10 +241,10 @@ func readMatch(abi *libre2ABI, cs cString, matchPtr uintptr, dstCap []int) []int
 	return append(dstCap, int(sIdx), int(sIdx+sLen))
 }
 
-func readMatches(abi *libre2ABI, cs cString, matchesPtr uintptr, n int, deliver func([]int)) {
+func readMatches(alloc *allocation, cs cString, matchesPtr uintptr, n int, deliver func([]int)) {
 	var dstCap [2]int
 
-	matchesBuf := abi.memory.read(abi, matchesPtr, 8*n)
+	matchesBuf := alloc.read(matchesPtr, 8*n)
 	for i := 0; i < n; i++ {
 		subStrPtr := uintptr(binary.LittleEndian.Uint32(matchesBuf[8*i:]))
 		if subStrPtr == 0 {
@@ -369,165 +365,169 @@ type cString struct {
 	length int
 }
 
-func newCString(abi *libre2ABI, s string) cString {
-	ptr := abi.memory.writeString(abi, s)
-	return cString{
-		ptr:    ptr,
-		length: len(s),
-	}
-}
-
-func newCStringFromBytes(abi *libre2ABI, s []byte) cString {
-	ptr := abi.memory.write(abi, s)
-	return cString{
-		ptr:    ptr,
-		length: len(s),
-	}
-}
-
-func newCStringPtr(abi *libre2ABI, cs cString) pointer {
-	ptr := abi.memory.allocate(8)
-	if !abi.wasmMemory.WriteUint32Le(uint32(ptr), uint32(cs.ptr)) {
-		panic(errFailedWrite)
-	}
-	if !abi.wasmMemory.WriteUint32Le(uint32(ptr+4), uint32(cs.length)) {
-		panic(errFailedWrite)
-	}
-	return pointer{ptr: ptr, abi: abi}
-}
-
 type cStringArray struct {
 	ptr uintptr
 }
 
-func newCStringArray(abi *libre2ABI, n int) cStringArray {
-	ptr := abi.memory.allocate(uint32(n * 8))
-	return cStringArray{ptr: ptr}
-}
-
 type pointer struct {
 	ptr uintptr
-	abi *libre2ABI
 }
 
 func malloc(abi *libre2ABI, size uint32) uintptr {
-	callStack := abi.callStack
+	var callStack [1]uint64
 	callStack[0] = uint64(size)
-	if err := abi.malloc.CallWithStack(context.Background(), callStack); err != nil {
+	if err := abi.malloc.CallWithStack(context.Background(), callStack[:]); err != nil {
 		panic(err)
 	}
 	return uintptr(callStack[0])
 }
 
 func free(abi *libre2ABI, ptr uintptr) {
-	callStack := abi.callStack
+	var callStack [1]uint64
 	callStack[0] = uint64(ptr)
-	if err := abi.free.CallWithStack(context.Background(), callStack); err != nil {
+	if err := abi.free.CallWithStack(context.Background(), callStack[:]); err != nil {
 		panic(err)
 	}
 }
 
-type sharedMemory struct {
+type allocation struct {
 	size    uint32
 	bufPtr  uint32
 	nextIdx uint32
+	abi     *libre2ABI
 }
 
-func (m *sharedMemory) reserve(abi *libre2ABI, size uint32) {
-	m.nextIdx = 0
-	if m.size >= size {
-		return
+func (abi *libre2ABI) reserve(size uint32) allocation {
+	ptr := malloc(abi, size)
+	return allocation{
+		size:    size,
+		bufPtr:  uint32(ptr),
+		nextIdx: 0,
+		abi:     abi,
 	}
-
-	if m.bufPtr != 0 {
-		free(abi, uintptr(m.bufPtr))
-	}
-
-	m.bufPtr = uint32(malloc(abi, size))
-	m.size = size
 }
 
-func (m *sharedMemory) allocate(size uint32) uintptr {
-	if m.nextIdx+size > m.size {
+func (a *allocation) free() {
+	free(a.abi, uintptr(a.bufPtr))
+}
+
+func (a *allocation) allocate(size uint32) uintptr {
+	if a.nextIdx+size > a.size {
 		panic("not enough reserved shared memory")
 	}
 
-	ptr := m.bufPtr + m.nextIdx
-	m.nextIdx += size
+	ptr := a.bufPtr + a.nextIdx
+	a.nextIdx += size
 	return uintptr(ptr)
 }
 
-func (m *sharedMemory) read(abi *libre2ABI, ptr uintptr, size int) []byte {
-	buf, ok := abi.wasmMemory.Read(uint32(ptr), uint32(size))
+func (a *allocation) read(ptr uintptr, size int) []byte {
+	buf, ok := a.abi.wasmMemory.Read(uint32(ptr), uint32(size))
 	if !ok {
 		panic(errFailedRead)
 	}
 	return buf
 }
 
-func (m *sharedMemory) write(abi *libre2ABI, b []byte) uintptr {
-	ptr := m.allocate(uint32(len(b)))
-	abi.wasmMemory.Write(uint32(ptr), b)
+func (a *allocation) write(b []byte) uintptr {
+	ptr := a.allocate(uint32(len(b)))
+	a.abi.wasmMemory.Write(uint32(ptr), b)
 	return ptr
 }
 
-func (m *sharedMemory) writeString(abi *libre2ABI, s string) uintptr {
-	ptr := m.allocate(uint32(len(s)))
-	abi.wasmMemory.WriteString(uint32(ptr), s)
+func (a *allocation) writeString(s string) uintptr {
+	ptr := a.allocate(uint32(len(s)))
+	a.abi.wasmMemory.WriteString(uint32(ptr), s)
 	return ptr
+}
+
+func (a *allocation) newCString(s string) cString {
+	ptr := a.writeString(s)
+	return cString{
+		ptr:    ptr,
+		length: len(s),
+	}
+}
+
+func (a *allocation) newCStringFromBytes(s []byte) cString {
+	ptr := a.write(s)
+	return cString{
+		ptr:    ptr,
+		length: len(s),
+	}
+}
+
+func (a *allocation) newCStringPtr(cs cString) pointer {
+	ptr := a.allocate(8)
+	if !a.abi.wasmMemory.WriteUint32Le(uint32(ptr), uint32(cs.ptr)) {
+		panic(errFailedWrite)
+	}
+	if !a.abi.wasmMemory.WriteUint32Le(uint32(ptr+4), uint32(cs.length)) {
+		panic(errFailedWrite)
+	}
+	return pointer{ptr: ptr}
+}
+
+func (a *allocation) newCStringArray(n int) cStringArray {
+	ptr := a.allocate(uint32(n * 8))
+	return cStringArray{ptr: ptr}
 }
 
 type lazyFunction struct {
-	f         api.Function
-	mod       api.Module
-	name      string
-	callStack []uint64
+	f    api.Function
+	mod  api.Module
+	name string
 }
 
-func newLazyFunction(mod api.Module, name string, callStack []uint64) lazyFunction {
-	return lazyFunction{mod: mod, name: name, callStack: callStack}
+func newLazyFunction(mod api.Module, name string) lazyFunction {
+	return lazyFunction{mod: mod, name: name}
 }
 
 func (f *lazyFunction) Call0(ctx context.Context) (uint64, error) {
-	return f.callWithStack(ctx)
+	var callStack [1]uint64
+	return f.callWithStack(ctx, callStack[:])
 }
 
 func (f *lazyFunction) Call1(ctx context.Context, arg1 uint64) (uint64, error) {
-	f.callStack[0] = arg1
-	return f.callWithStack(ctx)
+	var callStack [1]uint64
+	callStack[0] = arg1
+	return f.callWithStack(ctx, callStack[:])
 }
 
 func (f *lazyFunction) Call2(ctx context.Context, arg1 uint64, arg2 uint64) (uint64, error) {
-	f.callStack[0] = arg1
-	f.callStack[1] = arg2
-	return f.callWithStack(ctx)
+	var callStack [2]uint64
+	callStack[0] = arg1
+	callStack[1] = arg2
+	return f.callWithStack(ctx, callStack[:])
 }
 
 func (f *lazyFunction) Call3(ctx context.Context, arg1 uint64, arg2 uint64, arg3 uint64) (uint64, error) {
-	f.callStack[0] = arg1
-	f.callStack[1] = arg2
-	f.callStack[2] = arg3
-	return f.callWithStack(ctx)
+	var callStack [3]uint64
+	callStack[0] = arg1
+	callStack[1] = arg2
+	callStack[2] = arg3
+	return f.callWithStack(ctx, callStack[:])
 }
 
 func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3 uint64, arg4 uint64, arg5 uint64, arg6 uint64, arg7 uint64, arg8 uint64) (uint64, error) {
-	f.callStack[0] = arg1
-	f.callStack[1] = arg2
-	f.callStack[2] = arg3
-	f.callStack[3] = arg4
-	f.callStack[4] = arg5
-	f.callStack[5] = arg6
-	f.callStack[6] = arg7
-	f.callStack[7] = arg8
-	return f.callWithStack(ctx)
+	var callStack [8]uint64
+	callStack[0] = arg1
+	callStack[1] = arg2
+	callStack[2] = arg3
+	callStack[3] = arg4
+	callStack[4] = arg5
+	callStack[5] = arg6
+	callStack[6] = arg7
+	callStack[7] = arg8
+	return f.callWithStack(ctx, callStack[:])
 }
 
-func (f *lazyFunction) callWithStack(ctx context.Context) (uint64, error) {
+func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
 	if f.f == nil {
 		f.f = f.mod.ExportedFunction(f.name)
 	}
-	if err := f.f.CallWithStack(ctx, f.callStack); err != nil {
+	if err := f.f.CallWithStack(ctx, callStack); err != nil {
 		return 0, err
 	}
-	return f.callStack[0], nil
+	return callStack[0], nil
 }
