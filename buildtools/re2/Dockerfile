@@ -3,11 +3,9 @@
 
 FROM ghcr.io/webassembly/wasi-sdk:wasi-sdk-20
 
-ADD buildtools/re2/wasi-sdk-threads.cmake /usr/share/cmake/wasi-sdk-threads.cmake
-ENV CMAKE_TOOLCHAIN_FILE /usr/share/cmake/wasi-sdk-threads.cmake
 ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread
-ENV CXXFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread
-ENV LDFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot
+ENV CXXFLAGS $CFLAGS
+ENV LDFLAGS $CFLAGS -mexec-model=reactor
 
 RUN apt-get update && apt-get install -y binaryen curl
 
@@ -29,13 +27,10 @@ RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
 # Separate step so exports can be updated without recompiling.
 # Number of layers isn't really a concern for this image.
 # global-base=1024 same as emcc and allows further wasm-opt optimizations
-RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 -mexec-model=reactor --rtlib=compiler-rt --target=wasm32-wasi-threads -shared \
-    -nostdlib /wasi-sysroot/lib/wasm32-wasi-threads/crt1-reactor.o \
-    /usr/lib/llvm-$LLVM_VERSION/lib/clang/$LLVM_VERSION/lib/wasi/libclang_rt.builtins-wasm32.a \
+RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     /re2/obj/libre2.a \
     /cre2/libcre2.a \
-    -L/wasi-sysroot/lib/wasm32-wasi-threads -lc++ -lc++abi -lc \
-    --sysroot=/wasi-sysroot -Wl,--demangle -Wl,--allow-undefined \
+    -Wl,--import-memory -Wl,--export-memory -Wl,--max-memory=1073741824 \
     -Wl,--export=malloc \
     -Wl,--export=free \
     -Wl,--export=cre2_new \

@@ -7,7 +7,6 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -25,9 +24,13 @@ var (
 //go:embed wasm/libcre2.so
 var libre2 []byte
 
+//go:embed wasm/memory.wasm
+var memoryWasm []byte
+
 var (
 	wasmRT       wazero.Runtime
 	wasmCompiled wazero.CompiledModule
+	wasmMemory   api.Memory
 )
 
 type libre2ABI struct {
@@ -43,6 +46,7 @@ type libre2ABI struct {
 	cre2GlobalReplace         lazyFunction
 	cre2OptNew                lazyFunction
 	cre2OptDelete             lazyFunction
+	cre2OptSetLogErrors       lazyFunction
 	cre2OptSetLongestMatch    lazyFunction
 	cre2OptSetPosixSyntax     lazyFunction
 	cre2OptSetCaseSensitive   lazyFunction
@@ -51,17 +55,22 @@ type libre2ABI struct {
 	malloc lazyFunction
 	free   lazyFunction
 
-	wasmMemory api.Memory
-
 	mod api.Module
 	mu  sync.Mutex
 }
 
 func init() {
 	ctx := context.Background()
+	//f, _ := os.Create("trace.txt")
+	//lf := logging.NewLoggingListenerFactory(f)
+	//ctx = context.WithValue(ctx, experimental.FunctionListenerFactoryKey{}, lf)
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
-	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
+	wasi_snapshot_preview1.NewBuilder(rt).Instantiate(ctx)
+
+	if _, err := rt.InstantiateWithConfig(ctx, memoryWasm, wazero.NewModuleConfig().WithName("env")); err != nil {
+		panic(err)
+	}
 
 	code, err := rt.CompileModule(ctx, libre2)
 	if err != nil {
@@ -70,38 +79,35 @@ func init() {
 	wasmCompiled = code
 
 	wasmRT = rt
-}
-
-func newABI() *libre2ABI {
-	ctx := context.Background()
-	mod, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithName(""))
+	mod, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions("_initialize").WithName(""))
 	if err != nil {
 		panic(err)
 	}
+	wasmMemory = mod.Memory()
+}
 
+func newABI() *libre2ABI {
 	abi := &libre2ABI{
-		cre2New:                   newLazyFunction(mod, "cre2_new"),
-		cre2Delete:                newLazyFunction(mod, "cre2_delete"),
-		cre2Match:                 newLazyFunction(mod, "cre2_match"),
-		cre2NumCapturingGroups:    newLazyFunction(mod, "cre2_num_capturing_groups"),
-		cre2ErrorCode:             newLazyFunction(mod, "cre2_error_code"),
-		cre2ErrorArg:              newLazyFunction(mod, "cre2_error_arg"),
-		cre2NamedGroupsIterNew:    newLazyFunction(mod, "cre2_named_groups_iter_new"),
-		cre2NamedGroupsIterNext:   newLazyFunction(mod, "cre2_named_groups_iter_next"),
-		cre2NamedGroupsIterDelete: newLazyFunction(mod, "cre2_named_groups_iter_delete"),
-		cre2GlobalReplace:         newLazyFunction(mod, "cre2_global_replace_re"),
-		cre2OptNew:                newLazyFunction(mod, "cre2_opt_new"),
-		cre2OptDelete:             newLazyFunction(mod, "cre2_opt_delete"),
-		cre2OptSetLongestMatch:    newLazyFunction(mod, "cre2_opt_set_longest_match"),
-		cre2OptSetPosixSyntax:     newLazyFunction(mod, "cre2_opt_set_posix_syntax"),
-		cre2OptSetCaseSensitive:   newLazyFunction(mod, "cre2_opt_set_case_sensitive"),
-		cre2OptSetLatin1Encoding:  newLazyFunction(mod, "cre2_opt_set_latin1_encoding"),
+		cre2New:                   newLazyFunction(wasmRT, "cre2_new"),
+		cre2Delete:                newLazyFunction(wasmRT, "cre2_delete"),
+		cre2Match:                 newLazyFunction(wasmRT, "cre2_match"),
+		cre2NumCapturingGroups:    newLazyFunction(wasmRT, "cre2_num_capturing_groups"),
+		cre2ErrorCode:             newLazyFunction(wasmRT, "cre2_error_code"),
+		cre2ErrorArg:              newLazyFunction(wasmRT, "cre2_error_arg"),
+		cre2NamedGroupsIterNew:    newLazyFunction(wasmRT, "cre2_named_groups_iter_new"),
+		cre2NamedGroupsIterNext:   newLazyFunction(wasmRT, "cre2_named_groups_iter_next"),
+		cre2NamedGroupsIterDelete: newLazyFunction(wasmRT, "cre2_named_groups_iter_delete"),
+		cre2GlobalReplace:         newLazyFunction(wasmRT, "cre2_global_replace_re"),
+		cre2OptNew:                newLazyFunction(wasmRT, "cre2_opt_new"),
+		cre2OptDelete:             newLazyFunction(wasmRT, "cre2_opt_delete"),
+		cre2OptSetLogErrors:       newLazyFunction(wasmRT, "cre2_opt_set_log_errors"),
+		cre2OptSetLongestMatch:    newLazyFunction(wasmRT, "cre2_opt_set_longest_match"),
+		cre2OptSetPosixSyntax:     newLazyFunction(wasmRT, "cre2_opt_set_posix_syntax"),
+		cre2OptSetCaseSensitive:   newLazyFunction(wasmRT, "cre2_opt_set_case_sensitive"),
+		cre2OptSetLatin1Encoding:  newLazyFunction(wasmRT, "cre2_opt_set_latin1_encoding"),
 
-		malloc: newLazyFunction(mod, "malloc"),
-		free:   newLazyFunction(mod, "free"),
-
-		wasmMemory: mod.Memory(),
-		mod:        mod,
+		malloc: newLazyFunction(wasmRT, "malloc"),
+		free:   newLazyFunction(wasmRT, "free"),
 	}
 
 	return abi
@@ -118,40 +124,42 @@ func (abi *libre2ABI) endOperation(a allocation) {
 func newRE(abi *libre2ABI, pattern cString, opts CompileOptions) uintptr {
 	ctx := context.Background()
 	optPtr := uintptr(0)
-	if opts != (CompileOptions{}) {
-		res, err := abi.cre2OptNew.Call0(ctx)
+	res, err := abi.cre2OptNew.Call0(ctx)
+	if err != nil {
+		panic(err)
+	}
+	optPtr = uintptr(res)
+	defer func() {
+		if _, err := abi.cre2OptDelete.Call1(ctx, uint64(optPtr)); err != nil {
+			panic(err)
+		}
+	}()
+	_, err = abi.cre2OptSetLogErrors.Call2(ctx, uint64(optPtr), 0)
+	if err != nil {
+		panic(err)
+	}
+	if opts.Longest {
+		_, err = abi.cre2OptSetLongestMatch.Call2(ctx, uint64(optPtr), 1)
 		if err != nil {
 			panic(err)
 		}
-		optPtr = uintptr(res)
-		defer func() {
-			if _, err := abi.cre2OptDelete.Call1(ctx, uint64(optPtr)); err != nil {
-				panic(err)
-			}
-		}()
-		if opts.Longest {
-			_, err = abi.cre2OptSetLongestMatch.Call2(ctx, uint64(optPtr), 1)
-			if err != nil {
-				panic(err)
-			}
+	}
+	if opts.Posix {
+		_, err = abi.cre2OptSetPosixSyntax.Call2(ctx, uint64(optPtr), 1)
+		if err != nil {
+			panic(err)
 		}
-		if opts.Posix {
-			_, err = abi.cre2OptSetPosixSyntax.Call2(ctx, uint64(optPtr), 1)
-			if err != nil {
-				panic(err)
-			}
+	}
+	if opts.CaseInsensitive {
+		_, err = abi.cre2OptSetCaseSensitive.Call2(ctx, uint64(optPtr), 0)
+		if err != nil {
+			panic(err)
 		}
-		if opts.CaseInsensitive {
-			_, err = abi.cre2OptSetCaseSensitive.Call2(ctx, uint64(optPtr), 0)
-			if err != nil {
-				panic(err)
-			}
-		}
-		if opts.Latin1 {
-			_, err = abi.cre2OptSetLatin1Encoding.Call1(ctx, uint64(optPtr))
-			if err != nil {
-				panic(err)
-			}
+	}
+	if opts.Latin1 {
+		_, err = abi.cre2OptSetLatin1Encoding.Call1(ctx, uint64(optPtr))
+		if err != nil {
+			panic(err)
 		}
 	}
 	if res, err := abi.cre2New.Call3(ctx, uint64(pattern.ptr), uint64(pattern.length), uint64(optPtr)); err != nil {
@@ -200,11 +208,7 @@ func deleteRE(abi *libre2ABI, rePtr uintptr) {
 }
 
 func release(re *Regexp) {
-	ctx := context.Background()
 	deleteRE(re.abi, re.ptr)
-	if err := re.abi.mod.Close(ctx); err != nil {
-		fmt.Printf("error closing wazero module: %v", err)
-	}
 }
 
 func match(re *Regexp, s cString, matchesPtr uintptr, nMatches uint32) bool {
@@ -281,7 +285,7 @@ func namedGroupsIterNext(abi *libre2ABI, iterPtr uintptr) (string, int, bool) {
 		return "", 0, false
 	}
 
-	namePtr, ok := abi.wasmMemory.ReadUint32Le(uint32(namePtrPtr))
+	namePtr, ok := wasmMemory.ReadUint32Le(uint32(namePtrPtr))
 	if !ok {
 		panic(errFailedRead)
 	}
@@ -289,7 +293,7 @@ func namedGroupsIterNext(abi *libre2ABI, iterPtr uintptr) (string, int, bool) {
 	// C-string, read content until NULL.
 	name := strings.Builder{}
 	for {
-		b, ok := abi.wasmMemory.ReadByte(namePtr)
+		b, ok := wasmMemory.ReadByte(namePtr)
 		if !ok {
 			panic(errFailedRead)
 		}
@@ -300,7 +304,7 @@ func namedGroupsIterNext(abi *libre2ABI, iterPtr uintptr) (string, int, bool) {
 		namePtr++
 	}
 
-	index, ok := abi.wasmMemory.ReadUint32Le(uint32(indexPtr))
+	index, ok := wasmMemory.ReadUint32Le(uint32(indexPtr))
 	if !ok {
 		panic(errFailedRead)
 	}
@@ -334,19 +338,19 @@ func globalReplace(re *Regexp, textAndTargetPtr uintptr, rewritePtr uintptr) ([]
 		return nil, false
 	}
 
-	strPtr, ok := re.abi.wasmMemory.ReadUint32Le(uint32(textAndTargetPtr))
+	strPtr, ok := wasmMemory.ReadUint32Le(uint32(textAndTargetPtr))
 	if !ok {
 		panic(errFailedRead)
 	}
 	// This was malloc'd by cre2, so free it
 	defer free(re.abi, uintptr(strPtr))
 
-	strLen, ok := re.abi.wasmMemory.ReadUint32Le(uint32(textAndTargetPtr + 4))
+	strLen, ok := wasmMemory.ReadUint32Le(uint32(textAndTargetPtr + 4))
 	if !ok {
 		panic(errFailedRead)
 	}
 
-	str, ok := re.abi.wasmMemory.Read(strPtr, strLen)
+	str, ok := wasmMemory.Read(strPtr, strLen)
 	if !ok {
 		panic(errFailedRead)
 	}
@@ -414,7 +418,7 @@ func (a *allocation) allocate(size uint32) uintptr {
 }
 
 func (a *allocation) read(ptr uintptr, size int) []byte {
-	buf, ok := a.abi.wasmMemory.Read(uint32(ptr), uint32(size))
+	buf, ok := wasmMemory.Read(uint32(ptr), uint32(size))
 	if !ok {
 		panic(errFailedRead)
 	}
@@ -423,13 +427,13 @@ func (a *allocation) read(ptr uintptr, size int) []byte {
 
 func (a *allocation) write(b []byte) uintptr {
 	ptr := a.allocate(uint32(len(b)))
-	a.abi.wasmMemory.Write(uint32(ptr), b)
+	wasmMemory.Write(uint32(ptr), b)
 	return ptr
 }
 
 func (a *allocation) writeString(s string) uintptr {
 	ptr := a.allocate(uint32(len(s)))
-	a.abi.wasmMemory.WriteString(uint32(ptr), s)
+	wasmMemory.WriteString(uint32(ptr), s)
 	return ptr
 }
 
@@ -451,10 +455,10 @@ func (a *allocation) newCStringFromBytes(s []byte) cString {
 
 func (a *allocation) newCStringPtr(cs cString) pointer {
 	ptr := a.allocate(8)
-	if !a.abi.wasmMemory.WriteUint32Le(uint32(ptr), uint32(cs.ptr)) {
+	if !wasmMemory.WriteUint32Le(uint32(ptr), uint32(cs.ptr)) {
 		panic(errFailedWrite)
 	}
-	if !a.abi.wasmMemory.WriteUint32Le(uint32(ptr+4), uint32(cs.length)) {
+	if !wasmMemory.WriteUint32Le(uint32(ptr+4), uint32(cs.length)) {
 		panic(errFailedWrite)
 	}
 	return pointer{ptr: ptr}
@@ -467,12 +471,12 @@ func (a *allocation) newCStringArray(n int) cStringArray {
 
 type lazyFunction struct {
 	f    api.Function
-	mod  api.Module
+	rt   wazero.Runtime
 	name string
 }
 
-func newLazyFunction(mod api.Module, name string) lazyFunction {
-	return lazyFunction{mod: mod, name: name}
+func newLazyFunction(rt wazero.Runtime, name string) lazyFunction {
+	return lazyFunction{rt: rt, name: name}
 }
 
 func (f *lazyFunction) Call0(ctx context.Context) (uint64, error) {
@@ -515,7 +519,12 @@ func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3
 }
 
 func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
-	fun := f.mod.ExportedFunction(f.name)
+	mod, err := f.rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
+	defer mod.Close(ctx)
+	if err != nil {
+		panic(err)
+	}
+	fun := mod.ExportedFunction(f.name)
 	if err := fun.CallWithStack(ctx, callStack); err != nil {
 		return 0, err
 	}

@@ -743,6 +743,7 @@ func (re *Regexp) release() {
 	if !atomic.CompareAndSwapUint32(&re.released, 0, 1) {
 		return
 	}
+	println("released", re.ptr)
 	release(re)
 }
 
