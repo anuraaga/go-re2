@@ -144,48 +144,47 @@ func init() {
 		panic(err)
 	}
 	wasmMemory = mod.Memory()
-	wasiStartThread := mod.ExportedFunction("wasi_start_thread")
-
-	children = list.New()
-	modReqCh = make(chan api.Module)
-	modRespCh = make(chan api.Module)
-	go func() {
-		for {
-			child_or_req := <-modReqCh
-			if child_or_req != nil {
-				children.PushBack(child_or_req)
-				continue
-			}
-			if children.Len() > 0 {
-				elem := children.Front()
-				children.Remove(elem)
-				child := elem.Value.(api.Module)
-				modRespCh <- child
-				continue
-			}
-			exitCh := make(chan struct{})
-			ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
-			if _, err := mod.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
-				panic(err)
-			}
-		}
-	}()
+	wasiNewThread := mod.ExportedFunction("wasi_new_thread")
+	malloc := mod.ExportedFunction("malloc")
+	free := mod.ExportedFunction("free")
 
 	modPool.New = func() interface{} {
-		exitCh := make(chan struct{})
-		ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
 		modPoolMu.Lock()
 		defer modPoolMu.Unlock()
-		if _, err := wasiStartThread.Call(ctx); err != nil {
+
+		res, err := malloc.Call(ctx, 8)
+		if err != nil {
 			panic(err)
 		}
-		m := <-modRespCh
+		outNewTLSBase := res[0]
+		outNewStack := res[0] + 4
+		defer free.Call(ctx, outNewTLSBase)
 
-		holder := &modHolder{mod: m, exitCh: exitCh}
+		if _, err := wasiNewThread.Call(ctx, outNewTLSBase, outNewStack); err != nil {
+			panic(err)
+		}
+
+		newTLSBase, ok := wasmMemory.ReadUint32Le(uint32(outNewTLSBase))
+		if !ok {
+			panic(errFailedRead)
+		}
+		newStack, ok := wasmMemory.ReadUint32Le(uint32(outNewStack))
+		if !ok {
+			panic(errFailedRead)
+		}
+
+		child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
+		if err != nil {
+			panic(err)
+		}
+
+		if _, err := child.ExportedFunction("wasi_thread_init").Call(ctx, uint64(newTLSBase), uint64(newStack)); err != nil {
+			panic(err)
+		}
+
+		holder := &modHolder{mod: child}
 
 		runtime.SetFinalizer(holder, func(holder *modHolder) {
-			holder.exitCh <- struct{}{}
-			<-holder.exitCh
 			_ = holder.mod.Close(context.Background())
 		})
 

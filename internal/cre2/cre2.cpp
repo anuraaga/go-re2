@@ -716,15 +716,4 @@ cre2_set_match(cre2_set *set, const char *text, size_t text_len, int *match, siz
   return v.size();
 }
 
-void* __imported_thread_block(void* unused) __attribute__((
-  __import_module__("wasi"),
-  __import_name__("thread-block")
-));
-
-#include <pthread.h>
-void wasi_start_thread() {
-  pthread_t t;
-  pthread_create(&t, NULL, &__imported_thread_block, NULL);
-}
-
 /* end of file */

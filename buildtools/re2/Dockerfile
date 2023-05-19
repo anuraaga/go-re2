@@ -17,10 +17,16 @@ RUN make obj/libre2.a
 
 WORKDIR /cre2
 ADD internal/cre2/cre2.cpp /cre2
+ADD internal/cre2/thread.c /cre2
+ADD internal/cre2/thread_init.s /cre2
 ADD internal/cre2/cre2.h /cre2
 # Just one source file so not worth running make
 RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
+    $CC -c thread.c -o thread.o $CFLAGS && \
+    $CC -c thread_init.s -o thread_init.o $CFLAGS && \
     $AR cru libcre2.a  cre2.o && \
+    $AR cru libcre2.a  thread.o && \
+    $AR cru libcre2.a  thread_init.o && \
     $RANLIB libcre2.a
 
 # Separate step so exports can be updated without recompiling.
@@ -50,8 +56,8 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     -Wl,--export=cre2_named_groups_iter_next \
     -Wl,--export=cre2_named_groups_iter_delete \
     -Wl,--export=cre2_global_replace_re \
-    -Wl,--export=pthread_create \
-    -Wl,--export=wasi_start_thread
+    -Wl,--export=wasi_new_thread \
+    -Wl,--export=wasi_thread_init
 
 #RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
 RUN cp libcre2-noopt.so libcre2.so
