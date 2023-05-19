@@ -152,15 +152,16 @@ func init() {
 		modPoolMu.Lock()
 		defer modPoolMu.Unlock()
 
-		res, err := malloc.Call(ctx, 8)
+		res, err := malloc.Call(ctx, 12)
 		if err != nil {
 			panic(err)
 		}
 		outNewTLSBase := res[0]
 		outNewStack := res[0] + 4
+		outMap := res[0] + 8
 		defer free.Call(ctx, outNewTLSBase)
 
-		if _, err := wasiNewThread.Call(ctx, outNewTLSBase, outNewStack); err != nil {
+		if _, err := wasiNewThread.Call(ctx, outNewTLSBase, outNewStack, outMap); err != nil {
 			panic(err)
 		}
 
@@ -169,6 +170,10 @@ func init() {
 			panic(errFailedRead)
 		}
 		newStack, ok := wasmMemory.ReadUint32Le(uint32(outNewStack))
+		if !ok {
+			panic(errFailedRead)
+		}
+		newMap, ok := wasmMemory.ReadUint32Le(uint32(outMap))
 		if !ok {
 			panic(errFailedRead)
 		}
@@ -186,6 +191,7 @@ func init() {
 
 		runtime.SetFinalizer(holder, func(holder *modHolder) {
 			_ = holder.mod.Close(context.Background())
+			free.Call(context.Background(), uint64(newMap))
 		})
 
 		return holder

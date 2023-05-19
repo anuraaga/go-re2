@@ -57,7 +57,7 @@ static inline uintptr_t __get_tp() {
 #define __pthread_self() ((pthread_t)__get_tp())
 #define ROUND(x) (((x)+16-1)&-16)
 
-void wasi_new_thread(void** out_new_tls_base, void** out_new_stack) {
+void wasi_new_thread(void** out_new_tls_base, void** out_new_stack, void ** out_map) {
   struct pthread *self, *new;
   size_t tls_size = __builtin_wasm_tls_size();
   size_t tls_align = __builtin_wasm_tls_align();
@@ -98,4 +98,5 @@ void wasi_new_thread(void** out_new_tls_base, void** out_new_stack) {
 
   *out_new_tls_base = new_tls_base;
   *out_new_stack = new->stack;
+  *out_map = map;
 }
