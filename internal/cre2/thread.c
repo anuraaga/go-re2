@@ -69,7 +69,7 @@ void wasi_new_thread(void** out_new_tls_base, void** out_new_stack) {
   self = __pthread_self();
 
   size_t __pthread_tsd_size = sizeof(void *) * PTHREAD_KEYS_MAX;
-  size_t size = ROUND(tls_size + 65536 + __pthread_tsd_size);
+  size_t size = ROUND(tls_size + 256000 + __pthread_tsd_size);
 
   unsigned char *map = 0, *stack = 0, *tsd = 0, *stack_limit;
   map = malloc(size);
