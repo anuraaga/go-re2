@@ -104,10 +104,6 @@ func init() {
 			childStack[0] = uint64(tid)
 			childStack[1] = stack[0]
 			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
-			println(tid)
-			if tid == 25 {
-				println("foo?")
-			}
 			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
 			if err != nil {
 				panic(err)
