@@ -336,6 +336,8 @@ cre2_decl size_t cre2_set_match(cre2_set *set, const char *text, size_t text_len
  ** Done.
  ** ----------------------------------------------------------------- */
 
+cre2_decl void wasi_start_thread();
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

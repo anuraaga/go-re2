@@ -3,12 +3,15 @@
 package internal
 
 import (
+	"container/list"
 	"context"
 	_ "embed"
 	"encoding/binary"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -21,16 +24,35 @@ var (
 	errFailedRead  = errors.New("failed to read from wasm memory")
 )
 
+type contextKey string
+
+var (
+	contextKeyExitCh = contextKey("exit-channel")
+	contextKeyModCh  = contextKey("mod-channel")
+)
+
 //go:embed wasm/libcre2.so
 var libre2 []byte
 
 //go:embed wasm/memory.wasm
 var memoryWasm []byte
 
+type modHolder struct {
+	mod    api.Module
+	exitCh chan struct{}
+}
+
 var (
 	wasmRT       wazero.Runtime
 	wasmCompiled wazero.CompiledModule
 	wasmMemory   api.Memory
+
+	modPool   sync.Pool
+	modPoolMu sync.Mutex
+
+	modReqCh  chan api.Module
+	modRespCh chan api.Module
+	children  *list.List
 )
 
 type libre2ABI struct {
@@ -59,6 +81,8 @@ type libre2ABI struct {
 	mu  sync.Mutex
 }
 
+var prevTID uint32
+
 func init() {
 	ctx := context.Background()
 	//f, _ := os.Create("trace.txt")
@@ -66,9 +90,45 @@ func init() {
 	//ctx = context.WithValue(ctx, experimental.FunctionListenerFactoryKey{}, lf)
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
-	wasi_snapshot_preview1.NewBuilder(rt).Instantiate(ctx)
+	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	if _, err := rt.InstantiateWithConfig(ctx, memoryWasm, wazero.NewModuleConfig().WithName("env")); err != nil {
+		panic(err)
+	}
+
+	if _, err := rt.NewHostModuleBuilder("wasi").
+		NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			tid := atomic.AddUint32(&prevTID, 1)
+			childStack := make([]uint64, 2)
+			childStack[0] = uint64(tid)
+			childStack[1] = stack[0]
+			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
+			println(tid)
+			if tid == 25 {
+				println("foo?")
+			}
+			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
+			if err != nil {
+				panic(err)
+			}
+			go func() {
+				if err := child.ExportedFunction("wasi_thread_start").CallWithStack(ctx, childStack); err != nil {
+					panic(err)
+				}
+				close(exitCh)
+			}()
+			stack[0] = uint64(tid)
+		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
+		Export("thread-spawn").
+		NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
+			modRespCh <- m
+			<-exitCh
+		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
+		Export("thread-block").
+		Instantiate(ctx); err != nil {
 		panic(err)
 	}
 
@@ -84,6 +144,53 @@ func init() {
 		panic(err)
 	}
 	wasmMemory = mod.Memory()
+	wasiStartThread := mod.ExportedFunction("wasi_start_thread")
+
+	children = list.New()
+	modReqCh = make(chan api.Module)
+	modRespCh = make(chan api.Module)
+	go func() {
+		for {
+			child_or_req := <-modReqCh
+			if child_or_req != nil {
+				children.PushBack(child_or_req)
+				continue
+			}
+			if children.Len() > 0 {
+				elem := children.Front()
+				children.Remove(elem)
+				child := elem.Value.(api.Module)
+				modRespCh <- child
+				continue
+			}
+			exitCh := make(chan struct{})
+			ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
+			if _, err := mod.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
+				panic(err)
+			}
+		}
+	}()
+
+	modPool.New = func() interface{} {
+		exitCh := make(chan struct{})
+		ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
+		modPoolMu.Lock()
+		defer modPoolMu.Unlock()
+		if _, err := wasiStartThread.Call(ctx); err != nil {
+			panic(err)
+		}
+		m := <-modRespCh
+
+		holder := &modHolder{mod: m, exitCh: exitCh}
+
+		runtime.SetFinalizer(holder, func(holder *modHolder) {
+			holder.exitCh <- struct{}{}
+			<-holder.exitCh
+			_ = holder.mod.Close(context.Background())
+		})
+
+		return holder
+	}
 }
 
 func newABI() *libre2ABI {
@@ -201,10 +308,10 @@ func numCapturingGroups(abi *libre2ABI, rePtr uintptr) int {
 }
 
 func deleteRE(abi *libre2ABI, rePtr uintptr) {
-	ctx := context.Background()
-	if _, err := abi.cre2Delete.Call1(ctx, uint64(rePtr)); err != nil {
-		panic(err)
-	}
+	//ctx := context.Background()
+	//if _, err := abi.cre2Delete.Call1(ctx, uint64(rePtr)); err != nil {
+	//	panic(err)
+	//}
 }
 
 func release(re *Regexp) {
@@ -519,12 +626,9 @@ func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3
 }
 
 func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
-	mod, err := f.rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
-	defer mod.Close(ctx)
-	if err != nil {
-		panic(err)
-	}
-	fun := mod.ExportedFunction(f.name)
+	modH := modPool.Get().(*modHolder)
+	defer modPool.Put(modH)
+	fun := modH.mod.ExportedFunction(f.name)
 	if err := fun.CallWithStack(ctx, callStack); err != nil {
 		return 0, err
 	}
