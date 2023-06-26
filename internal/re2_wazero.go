@@ -88,7 +88,7 @@ func init() {
 	//f, _ := os.Create("trace.txt")
 	//lf := logging.NewLoggingListenerFactory(f)
 	//ctx = context.WithValue(ctx, experimental.FunctionListenerFactoryKey{}, lf)
-	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
