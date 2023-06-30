@@ -11,7 +11,7 @@ var mu sync.Mutex
 
 func parse(logLine string, rx *Regexp, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		rx.FindStringSubmatch(logLine)
 	}
 }
@@ -26,7 +26,7 @@ func TestConcurrency(t *testing.T) {
 	r := MustCompile(rx)
 
 	wg := &sync.WaitGroup{}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 40; i++ {
 		wg.Add(1)
 		go parse(logLine, r, wg)
 	}
