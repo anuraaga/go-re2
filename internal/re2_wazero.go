@@ -167,7 +167,7 @@ func getChildModule() *childModule {
 	modPoolMu.Lock()
 	defer modPoolMu.Unlock()
 	if modPool.Len() == 0 {
-		return createChildModuleWASI(rootMod)
+		return createChildModule(wasmRT, rootMod)
 	}
 	e := modPool.Front()
 	modPool.Remove(e)
@@ -238,8 +238,16 @@ func init() {
 	wasmMemory = root.Memory()
 	rootMod = root
 
-	m, _ := wasmMemory.Read(0, 1)
-	println(&m[0])
+	// Prevent memory.grow during execution by allocating a large chunk in the beginning
+	malloc := rootMod.ExportedFunction("malloc")
+	free := rootMod.ExportedFunction("free")
+	res, err := malloc.Call(ctx, uint64(64_000_000))
+	if err != nil {
+		panic(err)
+	}
+	if _, err := free.Call(ctx, res[0]); err != nil {
+		panic(err)
+	}
 
 	modPool = list.New()
 
