@@ -164,11 +164,42 @@ func init() {
 	//f, _ := os.Create("trace.txt")
 	//lf := logging.NewLoggingListenerFactory(f)
 	//ctx = context.WithValue(ctx, experimental.FunctionListenerFactoryKey{}, lf)
-	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	if _, err := rt.InstantiateWithConfig(ctx, memoryWasm, wazero.NewModuleConfig().WithName("env")); err != nil {
+		panic(err)
+	}
+
+	if _, err := rt.NewHostModuleBuilder("wasi").
+		NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			tid := atomic.AddUint32(&prevTID, 1)
+			childStack := make([]uint64, 2)
+			childStack[0] = uint64(tid)
+			childStack[1] = stack[0]
+			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
+			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
+			if err != nil {
+				panic(err)
+			}
+			go func() {
+				if err := child.ExportedFunction("wasi_thread_start").CallWithStack(ctx, childStack); err != nil {
+					panic(err)
+				}
+				close(exitCh)
+			}()
+			stack[0] = uint64(tid)
+		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
+		Export("thread-spawn").
+		NewFunctionBuilder().
+		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
+			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
+			<-exitCh
+		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
+		Export("thread-block").
+		Instantiate(ctx); err != nil {
 		panic(err)
 	}
 
