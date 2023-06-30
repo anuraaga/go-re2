@@ -60,7 +60,8 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     -Wl,--export=__stack_pointer \
     -Wl,--export=__tls_base \
     -Wl,--export=__tls_align \
-    -Wl,--export=__tls_size
+    -Wl,--export=__tls_size \
+    -Wl,--export=wasi_start_thread
 
 #RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
 RUN cp libcre2-noopt.so libcre2.so

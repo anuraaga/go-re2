@@ -83,6 +83,7 @@ var prevTID uint32
 type childModule struct {
 	mod        api.Module
 	tlsBasePtr uint32
+	exitCh     chan struct{}
 }
 
 func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
@@ -142,11 +143,31 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 	return ret
 }
 
+func createChildModuleWASI(root api.Module) *childModule {
+	exitCh := make(chan struct{})
+	modCh := make(chan api.Module)
+	ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
+	ctx = context.WithValue(ctx, contextKeyModCh, modCh)
+	if _, err := root.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
+		panic(err)
+	}
+	child := <-modCh
+	ret := &childModule{
+		mod:    child,
+		exitCh: exitCh,
+	}
+	runtime.SetFinalizer(ret, func(obj interface{}) {
+		cm := obj.(*childModule)
+		close(cm.exitCh)
+	})
+	return ret
+}
+
 func getChildModule() *childModule {
 	modPoolMu.Lock()
 	defer modPoolMu.Unlock()
 	if modPool.Len() == 0 {
-		return createChildModule(wasmRT, rootMod)
+		return createChildModuleWASI(rootMod)
 	}
 	e := modPool.Front()
 	modPool.Remove(e)
@@ -179,7 +200,6 @@ func init() {
 			childStack := make([]uint64, 2)
 			childStack[0] = uint64(tid)
 			childStack[1] = stack[0]
-			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
 			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
 			if err != nil {
 				panic(err)
@@ -188,7 +208,6 @@ func init() {
 				if err := child.ExportedFunction("wasi_thread_start").CallWithStack(ctx, childStack); err != nil {
 					panic(err)
 				}
-				close(exitCh)
 			}()
 			stack[0] = uint64(tid)
 		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
@@ -196,6 +215,8 @@ func init() {
 		NewFunctionBuilder().
 		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
 			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
+			modCh := ctx.Value(contextKeyModCh).(chan api.Module)
+			modCh <- m
 			<-exitCh
 		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
 		Export("thread-block").

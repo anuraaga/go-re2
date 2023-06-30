@@ -720,4 +720,21 @@ int re2debug() {
   return 0;
 }
 
+void* __imported_thread_block(void* unused) __attribute__((
+  __import_module__("wasi"),
+  __import_name__("thread-block")
+));
+
+#include <pthread.h>
+void wasi_start_thread() {
+  pthread_t t;
+  pthread_attr_t tattr;
+  pthread_attr_init(&tattr);
+  pthread_attr_setstacksize(&tattr, 256000);
+  pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
+  pthread_create(&t, &tattr, &__imported_thread_block, NULL);
+  pthread_attr_destroy(&tattr);
+}
+
+
 /* end of file */
