@@ -11,7 +11,7 @@ var mu sync.Mutex
 
 func parse(logLine string, rx *Regexp, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 100; i++ {
 		rx.FindStringSubmatch(logLine)
 	}
 }

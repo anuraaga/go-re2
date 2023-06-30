@@ -716,30 +716,8 @@ cre2_set_match(cre2_set *set, const char *text, size_t text_len, int *match, siz
   return v.size();
 }
 
-void* __imported_thread_block(void* unused) __attribute__((
-  __import_module__("wasi"),
-  __import_name__("thread-block")
-));
-
-#include <pthread.h>
-void wasi_start_thread() {
-  pthread_t t;
-  pthread_attr_t tattr;
-  pthread_attr_init(&tattr);
-  pthread_attr_setstacksize(&tattr, 256000);
-  pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
-  pthread_create(&t, &tattr, &__imported_thread_block, NULL);
-  pthread_attr_destroy(&tattr);
-}
-
-extern _Thread_local struct __pthread __wasilibc_pthread_self;
-
-static inline uintptr_t __get_tp() {
-  return (uintptr_t)&__wasilibc_pthread_self;
-}
-
 int re2debug() {
-  return (int)__get_tp();
+  return 0;
 }
 
 /* end of file */

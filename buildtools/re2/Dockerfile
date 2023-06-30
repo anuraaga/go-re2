@@ -3,16 +3,20 @@
 
 FROM ghcr.io/webassembly/wasi-sdk:wasi-sdk-20
 
-ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread -g
+ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread -g -D__USE_ISOC11
 ENV CXXFLAGS $CFLAGS
 ENV LDFLAGS $CFLAGS -mexec-model=reactor
 
 RUN apt-get update && apt-get install -y binaryen curl
 
+RUN mkdir -p /mimalloc && curl -L https://github.com/microsoft/mimalloc/archive/d1fff1119a52e15c1c3807efe1077024c39fe70e.tar.gz | tar -xz --strip-components 1 -C /mimalloc
+WORKDIR /mimalloc
+RUN mkdir -p out/release && cd out/release && cmake ../.. -DMI_BUILD_SHARED=off -DMI_BUILD_TESTS=off && make && ${RANLIB} libmimalloc.a
+
 # Use post-release commit for now as it includes support for no-threads
 RUN mkdir -p /re2 && curl -L https://github.com/google/re2/archive/refs/tags/2023-03-01.tar.gz | tar -xz --strip-components 1 -C /re2
 WORKDIR /re2
-ENV CXXFLAGS -fno-exceptions -O3 ${CXXFLAGS}
+ENV CXXFLAGS -fno-exceptions ${CXXFLAGS}
 RUN make obj/libre2.a
 
 WORKDIR /cre2
@@ -27,6 +31,7 @@ RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
 # Number of layers isn't really a concern for this image.
 # global-base=1024 same as emcc and allows further wasm-opt optimizations
 RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
+    /mimalloc/out/release/libmimalloc.a \
     /re2/obj/libre2.a \
     /cre2/libcre2.a \
     -Wl,--import-memory -Wl,--export-memory -Wl,--max-memory=1073741824 \
@@ -50,8 +55,6 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     -Wl,--export=cre2_named_groups_iter_next \
     -Wl,--export=cre2_named_groups_iter_delete \
     -Wl,--export=cre2_global_replace_re \
-    -Wl,--export=pthread_create \
-    -Wl,--export=wasi_start_thread \
     -Wl,--export=__wasm_init_tls \
     -Wl,--export=re2debug \
     -Wl,--export=__stack_pointer \
