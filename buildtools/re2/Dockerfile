@@ -3,7 +3,7 @@
 
 FROM ghcr.io/webassembly/wasi-sdk:wasi-sdk-20
 
-ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread
+ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread -g
 ENV CXXFLAGS $CFLAGS
 ENV LDFLAGS $CFLAGS -mexec-model=reactor
 
@@ -51,7 +51,13 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     -Wl,--export=cre2_named_groups_iter_delete \
     -Wl,--export=cre2_global_replace_re \
     -Wl,--export=pthread_create \
-    -Wl,--export=wasi_start_thread
+    -Wl,--export=wasi_start_thread \
+    -Wl,--export=__wasm_init_tls \
+    -Wl,--export=re2debug \
+    -Wl,--export=__stack_pointer \
+    -Wl,--export=__tls_base \
+    -Wl,--export=__tls_align \
+    -Wl,--export=__tls_size
 
 #RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
 RUN cp libcre2-noopt.so libcre2.so

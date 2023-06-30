@@ -83,6 +83,68 @@ type libre2ABI struct {
 
 var prevTID uint32
 
+type childModule struct {
+	mod        api.Module
+	tlsBasePtr uint32
+}
+
+func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
+	ctx := context.Background()
+
+	// Not executing function so is at end of stack
+	stackPointer := root.ExportedGlobal("__stack_pointer").Get()
+	tlsBase := root.ExportedGlobal("__tls_base").Get()
+	tlsAlign := root.ExportedGlobal("__tls_align").Get()
+
+	// Thread-local-storage for the main thread is from __tls_base to __stack_pointer
+	// For now, let's preserve the size but in the future we can probably use less.
+	size := stackPointer - tlsBase
+
+	malloc := root.ExportedFunction("malloc")
+
+	// Allocate memory for the child thread stack
+	res, err := malloc.Call(ctx, size)
+	if err != nil {
+		panic(err)
+	}
+	ptr := uint32(res[0])
+
+	println(ptr, tlsAlign)
+	if ptr == 0 {
+		println("foo?")
+	}
+
+	tid := atomic.AddUint32(&prevTID, 1)
+	root.Memory().WriteUint32Le(ptr, ptr)
+	root.Memory().WriteUint32Le(ptr+20, tid)
+
+	child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().
+		// Don't need to execute start functions again in child.
+		WithStartFunctions())
+	if err != nil {
+		panic(err)
+	}
+	initTLS := child.ExportedFunction("__wasm_init_tls")
+	if _, err := initTLS.Call(ctx, uint64(ptr)); err != nil {
+		panic(err)
+	}
+	child.ExportedGlobal("__stack_pointer").(api.MutableGlobal).Set(uint64(ptr) + size)
+
+	ret := &childModule{
+		mod:        child,
+		tlsBasePtr: ptr,
+	}
+	runtime.SetFinalizer(ret, func(obj interface{}) {
+		cm := obj.(*childModule)
+		free := cm.mod.ExportedFunction("free")
+		if _, err := free.Call(ctx, uint64(cm.tlsBasePtr)); err != nil {
+			panic(err)
+		}
+		_ = cm.mod.Close(context.Background())
+	})
+	return ret
+}
+
 func init() {
 	ctx := context.Background()
 	//f, _ := os.Create("trace.txt")
@@ -103,7 +165,6 @@ func init() {
 			childStack := make([]uint64, 2)
 			childStack[0] = uint64(tid)
 			childStack[1] = stack[0]
-			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
 			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
 			if err != nil {
 				panic(err)
@@ -112,7 +173,6 @@ func init() {
 				if err := child.ExportedFunction("wasi_thread_start").CallWithStack(ctx, childStack); err != nil {
 					panic(err)
 				}
-				close(exitCh)
 			}()
 			stack[0] = uint64(tid)
 		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
@@ -135,58 +195,21 @@ func init() {
 	wasmCompiled = code
 
 	wasmRT = rt
-	mod, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions("_initialize").WithName(""))
+	root, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions("_initialize").WithName(""))
 	if err != nil {
 		panic(err)
 	}
-	wasmMemory = mod.Memory()
-	wasiStartThread := mod.ExportedFunction("wasi_start_thread")
-
-	children = list.New()
-	modReqCh = make(chan api.Module)
-	modRespCh = make(chan api.Module)
-	go func() {
-		for {
-			child_or_req := <-modReqCh
-			if child_or_req != nil {
-				children.PushBack(child_or_req)
-				continue
-			}
-			if children.Len() > 0 {
-				elem := children.Front()
-				children.Remove(elem)
-				child := elem.Value.(api.Module)
-				modRespCh <- child
-				continue
-			}
-			exitCh := make(chan struct{})
-			ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
-			if _, err := mod.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
-				panic(err)
-			}
-		}
-	}()
+	wasmMemory = root.Memory()
 
 	modPool.New = func() interface{} {
-		exitCh := make(chan struct{})
-		ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
 		modPoolMu.Lock()
 		defer modPoolMu.Unlock()
-		if _, err := wasiStartThread.Call(ctx); err != nil {
-			panic(err)
-		}
-		m := <-modRespCh
-
-		holder := &modHolder{mod: m, exitCh: exitCh}
-
-		runtime.SetFinalizer(holder, func(holder *modHolder) {
-			holder.exitCh <- struct{}{}
-			<-holder.exitCh
-			_ = holder.mod.Close(context.Background())
-		})
-
-		return holder
+		return createChildModule(wasmRT, root)
 	}
+
+	//if _, err := root.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
+	//	panic(err)
+	//}
 }
 
 func newABI() *libre2ABI {
@@ -316,12 +339,14 @@ func release(re *Regexp) {
 
 func match(re *Regexp, s cString, matchesPtr uintptr, nMatches uint32) bool {
 	ctx := context.Background()
-	res, err := re.abi.cre2Match.Call8(ctx, uint64(re.ptr), uint64(s.ptr), uint64(s.length), 0, uint64(s.length), 0, uint64(matchesPtr), uint64(nMatches))
+	modH := modPool.Get().(*childModule)
+	defer modPool.Put(modH)
+	fun := modH.mod.ExportedFunction("cre2_match")
+	res, err := fun.Call(ctx, uint64(re.ptr), uint64(s.ptr), uint64(s.length), 0, uint64(s.length), 0, uint64(matchesPtr), uint64(nMatches))
 	if err != nil {
 		panic(err)
 	}
-
-	return res == 1
+	return res[0] == 1
 }
 
 func matchFrom(re *Regexp, s cString, startPos int, matchesPtr uintptr, nMatches uint32) bool {
@@ -622,7 +647,7 @@ func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3
 }
 
 func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
-	modH := modPool.Get().(*modHolder)
+	modH := modPool.Get().(*childModule)
 	defer modPool.Put(modH)
 	fun := modH.mod.ExportedFunction(f.name)
 	if err := fun.CallWithStack(ctx, callStack); err != nil {
