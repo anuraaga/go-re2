@@ -239,14 +239,16 @@ func init() {
 	rootMod = root
 
 	// Prevent memory.grow during execution by allocating a large chunk in the beginning
-	malloc := rootMod.ExportedFunction("malloc")
-	free := rootMod.ExportedFunction("free")
-	res, err := malloc.Call(ctx, uint64(64_000_000))
-	if err != nil {
-		panic(err)
-	}
-	if _, err := free.Call(ctx, res[0]); err != nil {
-		panic(err)
+	if true {
+		malloc := rootMod.ExportedFunction("malloc")
+		free := rootMod.ExportedFunction("free")
+		res, err := malloc.Call(ctx, uint64(64_000_000))
+		if err != nil {
+			panic(err)
+		}
+		if _, err := free.Call(ctx, res[0]); err != nil {
+			panic(err)
+		}
 	}
 
 	modPool = list.New()
