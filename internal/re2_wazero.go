@@ -92,7 +92,6 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 	// Not executing function so is at end of stack
 	stackPointer := root.ExportedGlobal("__stack_pointer").Get()
 	tlsBase := root.ExportedGlobal("__tls_base").Get()
-	tlsAlign := root.ExportedGlobal("__tls_align").Get()
 
 	// Thread-local-storage for the main thread is from __tls_base to __stack_pointer
 	// For now, let's preserve the size but in the future we can probably use less.
@@ -106,11 +105,6 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 		panic(err)
 	}
 	ptr := uint32(res[0])
-
-	println(ptr, tlsAlign)
-	if ptr == 0 {
-		println("foo?")
-	}
 
 	child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().
 		// Don't need to execute start functions again in child, it crashes anyways.
@@ -238,24 +232,7 @@ func init() {
 	wasmMemory = root.Memory()
 	rootMod = root
 
-	// Prevent memory.grow during execution by allocating a large chunk in the beginning
-	if true {
-		malloc := rootMod.ExportedFunction("malloc")
-		free := rootMod.ExportedFunction("free")
-		res, err := malloc.Call(ctx, uint64(64_000_000))
-		if err != nil {
-			panic(err)
-		}
-		if _, err := free.Call(ctx, res[0]); err != nil {
-			panic(err)
-		}
-	}
-
 	modPool = list.New()
-
-	//if _, err := root.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
-	//	panic(err)
-	//}
 }
 
 func newABI() *libre2ABI {
