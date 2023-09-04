@@ -14,7 +14,8 @@ WORKDIR /mimalloc
 RUN mkdir -p out/release && cd out/release && cmake ../.. -DMI_BUILD_SHARED=off -DMI_BUILD_TESTS=off && make && ${RANLIB} libmimalloc.a
 
 # Use post-release commit for now as it includes support for no-threads
-RUN mkdir -p /re2 && curl -L https://github.com/google/re2/archive/refs/tags/2023-03-01.tar.gz | tar -xz --strip-components 1 -C /re2
+#RUN mkdir -p /re2 && curl -L https://github.com/google/re2/archive/refs/tags/2023-03-01.tar.gz | tar -xz --strip-components 1 -C /re2
+ADD buildtools/re2/re2src /re2
 WORKDIR /re2
 ENV CXXFLAGS -fno-exceptions ${CXXFLAGS}
 RUN make obj/libre2.a
@@ -31,7 +32,7 @@ RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
 # Number of layers isn't really a concern for this image.
 # global-base=1024 same as emcc and allows further wasm-opt optimizations
 RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
-    /mimalloc/out/release/libmimalloc.a \
+    #/mimalloc/out/release/libmimalloc.a \
     /re2/obj/libre2.a \
     /cre2/libcre2.a \
     -Wl,--import-memory -Wl,--export-memory -Wl,--max-memory=1073741824 \

@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"errors"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -106,7 +107,7 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 	}
 	ptr := uint32(res[0])
 
-	child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().
+	child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithSysNanotime().WithSysWalltime().WithSysNanosleep().WithStdout(os.Stdout).WithStderr(os.Stderr).
 		// Don't need to execute start functions again in child, it crashes anyways.
 		WithStartFunctions())
 	if err != nil {
@@ -225,7 +226,7 @@ func init() {
 	wasmCompiled = code
 
 	wasmRT = rt
-	root, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions("_initialize").WithName(""))
+	root, err := wasmRT.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithSysWalltime().WithSysNanotime().WithSysNanosleep().WithStdout(os.Stdout).WithStderr(os.Stderr).WithStartFunctions("_initialize").WithName(""))
 	if err != nil {
 		panic(err)
 	}
