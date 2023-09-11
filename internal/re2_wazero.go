@@ -85,6 +85,7 @@ type childModule struct {
 	mod        api.Module
 	tlsBasePtr uint32
 	exitCh     chan struct{}
+	functions  map[string]api.Function
 }
 
 func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
@@ -126,6 +127,7 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 	ret := &childModule{
 		mod:        child,
 		tlsBasePtr: ptr,
+		functions:  map[string]api.Function{},
 	}
 	runtime.SetFinalizer(ret, func(obj interface{}) {
 		cm := obj.(*childModule)
@@ -673,7 +675,13 @@ func (f *lazyFunction) Call8(ctx context.Context, arg1 uint64, arg2 uint64, arg3
 func (f *lazyFunction) callWithStack(ctx context.Context, callStack []uint64) (uint64, error) {
 	modH := getChildModule()
 	defer putChildModule(modH)
-	fun := modH.mod.ExportedFunction(f.name)
+
+	fun := modH.functions[f.name]
+	if fun == nil {
+		fun = modH.mod.ExportedFunction(f.name)
+		modH.functions[f.name] = fun
+	}
+
 	if err := fun.CallWithStack(ctx, callStack); err != nil {
 		return 0, err
 	}
