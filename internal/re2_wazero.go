@@ -14,10 +14,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/experimental"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	wazero "github.com/wasilibs/wazerox"
+	"github.com/wasilibs/wazerox/api"
+	"github.com/wasilibs/wazerox/experimental"
+	"github.com/wasilibs/wazerox/imports/wasi_snapshot_preview1"
 )
 
 var (
@@ -74,9 +74,6 @@ type libre2ABI struct {
 
 	malloc lazyFunction
 	free   lazyFunction
-
-	mod api.Module
-	mu  sync.Mutex
 }
 
 var prevTID uint32
@@ -84,7 +81,6 @@ var prevTID uint32
 type childModule struct {
 	mod        api.Module
 	tlsBasePtr uint32
-	exitCh     chan struct{}
 	functions  map[string]api.Function
 }
 
@@ -140,26 +136,6 @@ func createChildModule(rt wazero.Runtime, root api.Module) *childModule {
 	return ret
 }
 
-func createChildModuleWASI(root api.Module) *childModule {
-	exitCh := make(chan struct{})
-	modCh := make(chan api.Module)
-	ctx := context.WithValue(context.Background(), contextKeyExitCh, exitCh)
-	ctx = context.WithValue(ctx, contextKeyModCh, modCh)
-	if _, err := root.ExportedFunction("wasi_start_thread").Call(ctx); err != nil {
-		panic(err)
-	}
-	child := <-modCh
-	ret := &childModule{
-		mod:    child,
-		exitCh: exitCh,
-	}
-	runtime.SetFinalizer(ret, func(obj interface{}) {
-		cm := obj.(*childModule)
-		close(cm.exitCh)
-	})
-	return ret
-}
-
 func getChildModule() *childModule {
 	modPoolMu.Lock()
 	defer modPoolMu.Unlock()
@@ -179,45 +155,11 @@ func putChildModule(cm *childModule) {
 
 func init() {
 	ctx := context.Background()
-	//f, _ := os.Create("trace.txt")
-	//lf := logging.NewLoggingListenerFactory(f)
-	//ctx = context.WithValue(ctx, experimental.FunctionListenerFactoryKey{}, lf)
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	if _, err := rt.InstantiateWithConfig(ctx, memoryWasm, wazero.NewModuleConfig().WithName("env")); err != nil {
-		panic(err)
-	}
-
-	if _, err := rt.NewHostModuleBuilder("wasi").
-		NewFunctionBuilder().
-		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
-			tid := atomic.AddUint32(&prevTID, 1)
-			childStack := make([]uint64, 2)
-			childStack[0] = uint64(tid)
-			childStack[1] = stack[0]
-			child, err := rt.InstantiateModule(ctx, wasmCompiled, wazero.NewModuleConfig().WithStartFunctions().WithName(""))
-			if err != nil {
-				panic(err)
-			}
-			go func() {
-				if err := child.ExportedFunction("wasi_thread_start").CallWithStack(ctx, childStack); err != nil {
-					panic(err)
-				}
-			}()
-			stack[0] = uint64(tid)
-		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
-		Export("thread-spawn").
-		NewFunctionBuilder().
-		WithGoModuleFunction(api.GoModuleFunc(func(ctx context.Context, m api.Module, stack []uint64) {
-			exitCh := ctx.Value(contextKeyExitCh).(chan struct{})
-			modCh := ctx.Value(contextKeyModCh).(chan api.Module)
-			modCh <- m
-			<-exitCh
-		}), []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).
-		Export("thread-block").
-		Instantiate(ctx); err != nil {
 		panic(err)
 	}
 
@@ -353,10 +295,10 @@ func numCapturingGroups(abi *libre2ABI, rePtr uintptr) int {
 }
 
 func deleteRE(abi *libre2ABI, rePtr uintptr) {
-	//ctx := context.Background()
-	//if _, err := abi.cre2Delete.Call1(ctx, uint64(rePtr)); err != nil {
-	//	panic(err)
-	//}
+	ctx := context.Background()
+	if _, err := abi.cre2Delete.Call1(ctx, uint64(rePtr)); err != nil {
+		panic(err)
+	}
 }
 
 func release(re *Regexp) {
@@ -624,7 +566,6 @@ func (a *allocation) newCStringArray(n int) cStringArray {
 }
 
 type lazyFunction struct {
-	f    api.Function
 	rt   wazero.Runtime
 	name string
 }
