@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"errors"
+	"log"
 	"os"
 	"runtime"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	wazero "github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/experimental"
+	"github.com/tetratelabs/wazero/experimental/opt"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -150,7 +152,15 @@ func putChildModule(cm *childModule) {
 
 func init() {
 	ctx := context.Background()
-	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
+
+	var rtCfg wazero.RuntimeConfig
+	if runtime.GOARCH == "arm64" {
+		rtCfg = opt.NewRuntimeConfigOptimizingCompiler()
+	} else {
+		rtCfg = wazero.NewRuntimeConfig()
+	}
+
+	rt := wazero.NewRuntimeWithConfig(ctx, rtCfg.WithCoreFeatures(api.CoreFeaturesV2|experimental.CoreFeaturesThreads))
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
@@ -158,7 +168,9 @@ func init() {
 		panic(err)
 	}
 
+	log.Println("compiling")
 	code, err := rt.CompileModule(ctx, libre2)
+	log.Println("compiled")
 	if err != nil {
 		panic(err)
 	}
