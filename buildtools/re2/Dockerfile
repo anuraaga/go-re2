@@ -28,7 +28,7 @@ RUN $CXX -c cre2.cpp -o cre2.o -I. -I/re2 $CXXFLAGS && \
 
 FROM base AS wazero
 
-ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread -O3 -D__USE_ISOC11
+ENV CFLAGS --target=wasm32-wasi-threads --sysroot=/wasi-sysroot -pthread -g -D__USE_ISOC11
 ENV CXXFLAGS -fno-exceptions $CFLAGS
 ENV LDFLAGS $CFLAGS -mexec-model=reactor
 
@@ -75,7 +75,8 @@ RUN $CXX -o libcre2-noopt.so -Wl,--global-base=1024 $LDFLAGS \
     -Wl,--export=__tls_align \
     -Wl,--export=__tls_size
 
-RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+#RUN wasm-opt -o libcre2.so --low-memory-unused --flatten --rereloop --converge -O3 libcre2-noopt.so
+RUN mv libcre2-noopt.so libcre2.so
 
 FROM ghcr.io/webassembly/wasi-sdk:wasi-sdk-20
 

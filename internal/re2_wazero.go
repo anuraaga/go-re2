@@ -8,7 +8,6 @@ import (
 	_ "embed"
 	"encoding/binary"
 	"errors"
-	"log"
 	"os"
 	"runtime"
 	"strings"
@@ -154,7 +153,7 @@ func init() {
 	ctx := context.Background()
 
 	var rtCfg wazero.RuntimeConfig
-	if runtime.GOARCH == "arm64" {
+	if runtime.GOARCH == "arm64" || runtime.GOARCH == "amd64" {
 		rtCfg = opt.NewRuntimeConfigOptimizingCompiler()
 	} else {
 		rtCfg = wazero.NewRuntimeConfig()
@@ -168,9 +167,7 @@ func init() {
 		panic(err)
 	}
 
-	log.Println("compiling")
 	code, err := rt.CompileModule(ctx, libre2)
-	log.Println("compiled")
 	if err != nil {
 		panic(err)
 	}
