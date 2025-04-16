@@ -2,8 +2,6 @@ module github.com/wasilibs/go-re2/wafbench
 
 go 1.23.0
 
-toolchain go1.24.1
-
 require (
 	github.com/corazawaf/coraza-coreruleset/v4 v4.10.0
 	github.com/corazawaf/coraza/v3 v3.3.3
